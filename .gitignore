@@ -1,2 +1,2 @@
-./volume/*
-./infra/.terraform/*
+volume/*
+infra/.terraform/*

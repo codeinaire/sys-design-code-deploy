@@ -1,0 +1,16 @@
+name: code-deployment-question
+services:
+  localstack:
+    container_name: localstack-main
+    image: localstack/localstack:stable
+    ports:
+      - '127.0.0.1:4566:4566' # LocalStack Gateway
+      - '127.0.0.1:4510-4559:4510-4559' # External services
+    environment:
+      - DEBUG=0
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - '${LOCALSTACK_VOLUME_DIR:-./volume}:/var/lib/localstack'
+      - '/var/run/docker.sock:/var/run/docker.sock'
+      - './src:/var/task/src' # Mount src directory for Lambda code
+      - './infra:/var/task/infra' # Mount infra for Terraform
