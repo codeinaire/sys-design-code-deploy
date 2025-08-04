@@ -1,2 +1,11 @@
+# docker volume
 volume/*
+
+# terraform
 infra/.terraform/*
+infra/.terraform.lock.hcl
+infra/terraform.tfstate
+infra/terraform.tfstate.backup
+
+# lambda
+*.zip
