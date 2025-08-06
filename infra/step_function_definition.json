@@ -1,0 +1,278 @@
+{
+  "Comment": "Complete file distribution workflow - triggered by S3 file creation",
+  "StartAt": "ValidateInput",
+  "States": {
+    "ValidateInput": {
+      "Type": "Pass",
+      "Comment": "Validate and prepare input from S3 event",
+      "Parameters": {
+        "sourceKey.$": "$.sourceKey",
+        "sourceBucket.$": "$.sourceBucket",
+        "destinationBuckets.$": "$.destinationBuckets",
+        "workflowStartTime.$": "$$.State.EnteredTime",
+        "executionId.$": "$$.Execution.Name"
+      },
+      "Next": "LogWorkflowStart"
+    },
+    "LogWorkflowStart": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Comment": "Record workflow start in DynamoDB",
+      "Parameters": {
+        "TableName": "${table_name}",
+        "Item": {
+          "fileKey": {
+            "S.$": "$.sourceKey"
+          },
+          "sourceBucket": {
+            "S.$": "$.sourceBucket"
+          },
+          "executionId": {
+            "S.$": "$.executionId"
+          },
+          "status": {
+            "S": "IN_PROGRESS"
+          },
+          "startTime": {
+            "S.$": "$.workflowStartTime"
+          },
+          "totalDestinationBuckets": {
+            "N.$": "States.Format('{}', States.ArrayLength($.destinationBuckets))"
+          },
+          "destinationBuckets": {
+            "S.$": "States.JsonToString($.destinationBuckets)"
+          }
+        }
+      },
+      "Next": "CopyToMultipleBuckets",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ]
+    },
+    "CopyToMultipleBuckets": {
+      "Type": "Map",
+      "Comment": "Copy file to multiple destination buckets in parallel",
+      "ItemsPath": "$.destinationBuckets",
+      "MaxConcurrency": 10,
+      "ResultPath": "$.copyResults",
+      "Parameters": {
+        "destinationBucket.$": "$",
+        "sourceKey.$": "$.sourceKey",
+        "sourceBucket.$": "$.sourceBucket",
+        "executionId.$": "$.executionId"
+      },
+      "Iterator": {
+        "StartAt": "CopyFile",
+        "States": {
+          "CopyFile": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:s3:copyObject",
+            "Parameters": {
+              "CopySource.$": "States.Format('{}/{}', $.sourceBucket, $.sourceKey)",
+              "Bucket.$": "$.destinationBucket",
+              "Key.$": "$.sourceKey",
+              "MetadataDirective": "COPY"
+            },
+            "ResultPath": "$.copyResult",
+            "Next": "FormatSuccessResult",
+            "Retry": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 3,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "Next": "FormatErrorResult",
+                "ResultPath": "$.error"
+              }
+            ]
+          },
+          "FormatSuccessResult": {
+            "Type": "Pass",
+            "Parameters": {
+              "destinationBucket.$": "$.destinationBucket",
+              "sourceKey.$": "$.sourceKey",
+              "sourceBucket.$": "$.sourceBucket",
+              "success": true,
+              "timestamp.$": "$$.State.EnteredTime",
+              "executionId.$": "$.executionId",
+              "etag.$": "$.copyResult.CopyObjectResult.ETag"
+            },
+            "End": true
+          },
+          "FormatErrorResult": {
+            "Type": "Pass",
+            "Parameters": {
+              "destinationBucket.$": "$.destinationBucket",
+              "sourceKey.$": "$.sourceKey",
+              "sourceBucket.$": "$.sourceBucket",
+              "success": false,
+              "error.$": "$.error.Error",
+              "cause.$": "$.error.Cause",
+              "timestamp.$": "$$.State.EnteredTime",
+              "executionId.$": "$.executionId"
+            },
+            "End": true
+          }
+        }
+      },
+      "Next": "ProcessResults"
+    },
+    "ProcessResults": {
+      "Type": "Pass",
+      "Comment": "Process copy results and prepare final update",
+      "Parameters": {
+        "sourceKey.$": "$.sourceKey",
+        "sourceBucket.$": "$.sourceBucket",
+        "executionId.$": "$.executionId",
+        "workflowStartTime.$": "$.workflowStartTime",
+        "copyResults.$": "$.copyResults",
+        "completedAt.$": "$$.State.EnteredTime",
+        "totalBuckets.$": "States.ArrayLength($.destinationBuckets)",
+        "successfulCopies.$": "States.ArrayLength($.copyResults[?(@.success == true)])",
+        "failedCopies.$": "States.ArrayLength($.copyResults[?(@.success == false)])",
+        "successfulBuckets.$": "$.copyResults[?(@.success == true)].destinationBucket",
+        "failedBuckets.$": "$.copyResults[?(@.success == false)].destinationBucket"
+      },
+      "Next": "UpdateDynamoDBFinal"
+    },
+    "UpdateDynamoDBFinal": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Comment": "Update DynamoDB with final workflow results",
+      "Parameters": {
+        "TableName": "${table_name}",
+        "Key": {
+          "fileKey": {
+            "S.$": "$.sourceKey"
+          },
+          "sourceBucket": {
+            "S.$": "$.sourceBucket"
+          }
+        },
+        "UpdateExpression": "SET #status = :status, completedAt = :completedAt, totalBuckets = :totalBuckets, successfulCopies = :successfulCopies, failedCopies = :failedCopies, successfulBuckets = :successfulBuckets, failedBuckets = :failedBuckets, copyResults = :copyResults, executionId = :executionId",
+        "ExpressionAttributeNames": {
+          "#status": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S.$": "States.If(States.MathEquals($.successfulCopies, $.totalBuckets), 'COMPLETED', 'FAILED')"
+          },
+          ":completedAt": {
+            "S.$": "$.completedAt"
+          },
+          ":totalBuckets": {
+            "N.$": "States.Format('{}', $.totalBuckets)"
+          },
+          ":successfulCopies": {
+            "N.$": "States.Format('{}', $.successfulCopies)"
+          },
+          ":failedCopies": {
+            "N.$": "States.Format('{}', $.failedCopies)"
+          },
+          ":successfulBuckets": {
+            "S.$": "States.JsonToString($.successfulBuckets)"
+          },
+          ":failedBuckets": {
+            "S.$": "States.JsonToString($.failedBuckets)"
+          },
+          ":copyResults": {
+            "S.$": "States.JsonToString($.copyResults)"
+          },
+          ":executionId": {
+            "S.$": "$.executionId"
+          }
+        }
+      },
+      "Next": "CheckIfAllSuccessful",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ]
+    },
+    "CheckIfAllSuccessful": {
+      "Type": "Choice",
+      "Comment": "Determine if all copies were successful",
+      "Choices": [
+        {
+          "Variable": "$.failedCopies",
+          "NumericEquals": 0,
+          "Next": "AllCopiesSuccessful"
+        }
+      ],
+      "Default": "SomeCopiesFailed"
+    },
+    "AllCopiesSuccessful": {
+      "Type": "Pass",
+      "Parameters": {
+        "status": "SUCCESS",
+        "message": "All file copies completed successfully",
+        "sourceKey.$": "$.sourceKey",
+        "sourceBucket.$": "$.sourceBucket",
+        "totalBuckets.$": "$.totalBuckets",
+        "executionId.$": "$.executionId"
+      },
+      "End": true
+    },
+    "SomeCopiesFailed": {
+      "Type": "Pass",
+      "Parameters": {
+        "status": "PARTIAL_FAILURE",
+        "message": "Some file copies failed - sending notification",
+        "sourceKey.$": "$.sourceKey",
+        "sourceBucket.$": "$.sourceBucket",
+        "failedCopies.$": "$.failedCopies",
+        "successfulCopies.$": "$.successfulCopies",
+        "totalBuckets.$": "$.totalBuckets",
+        "failedBuckets.$": "$.failedBuckets",
+        "executionId.$": "$.executionId"
+      },
+      "Next": "SendFailureNotification"
+    },
+    "SendFailureNotification": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${topic_arn}",
+        "Subject.$": "States.Format('🚨 File Copy Failures: {}', $.sourceKey)",
+        "Message.$": "States.Format('File Distribution Workflow Failed\\n\\n📁 File: \"{}\"\\n🪣 Source Bucket: \"{}\"\\n🎯 Total Destination Buckets: {}\\n✅ Successful Copies: {}\\n❌ Failed Copies: {}\\n\\n🚫 Failed Buckets:\\n{}\\n\\n📊 Execution ID: {}\\n\\n💾 Full details available in DynamoDB table \"FileCopyTracking\"', $.sourceKey, $.sourceBucket, $.totalBuckets, $.successfulCopies, $.failedCopies, States.ArrayJoin($.failedBuckets, '\\n- '), $.executionId)"
+      },
+      "End": true,
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "NotificationFailed"
+        }
+      ]
+    },
+    "NotificationFailed": {
+      "Type": "Pass",
+      "Result": {
+        "status": "FAILURE_NOTIFICATION_FAILED",
+        "message": "File copies failed AND notification failed - check CloudWatch logs"
+      },
+      "End": true
+    }
+  }
+}

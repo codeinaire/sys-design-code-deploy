@@ -1,0 +1,19 @@
+{
+  "name": "lambda-step-function-invoker",
+  "version": "1.0.0",
+  "description": "Lambda function to invoke Step Functions for file copying workflow",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@aws-sdk/client-sfn": "^3.0.0"
+  },
+  "keywords": [
+    "aws",
+    "lambda",
+    "step-functions"
+  ],
+  "author": "",
+  "license": "ISC"
+}

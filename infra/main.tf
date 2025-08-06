@@ -44,17 +44,6 @@ provider "aws" {
   }
 }
 
-module "sqs_build_jobs_queue" {
-  source  = "terraform-aws-modules/sqs/aws"
-  version = "5.0.0"
-
-
-  name       = "build-jobs-queue"
-  fifo_queue = true
-  create_dlq = true
-  dlq_name   = "build-jobs-queue-dlq"
-}
-
 module "sqs_deployment_jobs_queue" {
   source  = "terraform-aws-modules/sqs/aws"
   version = "5.0.0"
@@ -88,18 +77,7 @@ module "region_b_builds_bucket" {
 }
 
 
-module "dynamodb_replication_status_table" {
-  source = "terraform-aws-modules/dynamodb-table/aws"
 
-  name     = "replication-status"
-  hash_key = "build_id"
-  attributes = [
-    {
-      name = "build_id"
-      type = "S"
-    }
-  ]
-}
 
 module "dynamodb_tables" {
   source  = "terraform-aws-modules/dynamodb-table/aws"
@@ -132,17 +110,6 @@ module "lambda_build_worker" {
       {
         Effect = "Allow"
         Action = [
-          "sqs:ReceiveMessage",
-          "sqs:DeleteMessage",
-          "sqs:GetQueueAttributes"
-        ]
-        Resource = [
-          module.sqs_build_jobs_queue.sqs_queue_arn
-        ]
-      },
-      {
-        Effect = "Allow"
-        Action = [
           "s3:PutObject",
           "s3:GetObject",
           "s3:ListBucket"
@@ -166,21 +133,14 @@ module "lambda_replication_worker" {
   create_package       = false
   local_existing_package = "../src/lambda_replication_worker.zip"
 
+  environment_variables = {
+    STEP_FUNCTION_ARN = aws_sfn_state_machine.file_copy_workflow.arn
+  }
+
   attach_policy_json = true
   policy_json = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "sqs:ReceiveMessage",
-          "sqs:DeleteMessage",
-          "sqs:GetQueueAttributes"
-        ]
-        Resource = [
-          module.sqs_deployment_jobs_queue.sqs_queue_arn
-        ]
-      },
       {
         Effect = "Allow"
         Action = [
@@ -205,7 +165,14 @@ module "lambda_replication_worker" {
           "dynamodb:GetItem",
           "dynamodb:UpdateItem"
         ]
-        Resource = module.dynamodb_replication_status_table.dynamodb_table_arn
+        Resource = aws_dynamodb_table.file_copy_tracking.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "states:StartExecution"
+        ]
+        Resource = aws_sfn_state_machine.file_copy_workflow.arn
       }
     ]
   })
@@ -225,19 +192,7 @@ module "lambda_regional_sync" {
   policy_json = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "sqs:SendMessage",
-          "sqs:ReceiveMessage",
-          "sqs:DeleteMessage",
-          "sqs:GetQueueAttributes"
-        ]
-        Resource = [
-          module.sqs_build_jobs_queue.sqs_queue_arn,
-          module.sqs_deployment_jobs_queue.sqs_queue_arn
-        ]
-      },
+
       {
         Effect = "Allow"
         Action = [
@@ -261,7 +216,50 @@ module "lambda_regional_sync" {
           "dynamodb:GetItem",
           "dynamodb:UpdateItem"
         ]
-        Resource = module.dynamodb_replication_status_table.dynamodb_table_arn
+        Resource = aws_dynamodb_table.file_copy_tracking.arn
+      }
+    ]
+  })
+}
+
+# S3 event trigger for replication worker
+resource "aws_s3_bucket_notification" "global_builds_notification" {
+  bucket = module.global_builds_bucket.s3_bucket_id
+
+  lambda_function {
+    lambda_function_arn = module.lambda_replication_worker.lambda_function_arn
+    events              = ["s3:ObjectCreated:*"]
+    filter_prefix       = ""
+    filter_suffix       = ".zip"
+  }
+
+  depends_on = [module.lambda_replication_worker]
+}
+
+module "lambda_step_function_invoker" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.0.1"
+
+  function_name         = "step-function-invoker"
+  handler              = "index.handler"
+  runtime              = "nodejs20.x"
+  create_package       = false
+  local_existing_package = "../src/lambda_step_function_invoker.zip"
+
+  environment_variables = {
+    STEP_FUNCTION_ARN = aws_sfn_state_machine.file_copy_workflow.arn
+  }
+
+  attach_policy_json = true
+  policy_json = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "states:StartExecution"
+        ]
+        Resource = aws_sfn_state_machine.file_copy_workflow.arn
       }
     ]
   })
@@ -358,4 +356,127 @@ module "api_gateway" {
     Environment = "dev"
     Terraform   = "true"
   }
+}
+
+# SNS Topic for file copy failure notifications
+resource "aws_sns_topic" "file_copy_failures" {
+  name = "file-copy-failures"
+}
+
+# IAM Role for Step Functions
+resource "aws_iam_role" "step_functions_role" {
+  name = "step-functions-execution-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "states.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+# IAM Policy for Step Functions to access S3, DynamoDB, and SNS
+resource "aws_iam_role_policy" "step_functions_policy" {
+  name = "step-functions-policy"
+  role = aws_iam_role.step_functions_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:CopyObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          module.global_builds_bucket.s3_bucket_arn,
+          "${module.global_builds_bucket.s3_bucket_arn}/*",
+          module.region_a_builds_bucket.s3_bucket_arn,
+          "${module.region_a_builds_bucket.s3_bucket_arn}/*",
+          module.region_b_builds_bucket.s3_bucket_arn,
+          "${module.region_b_builds_bucket.s3_bucket_arn}/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:GetItem",
+          "dynamodb:UpdateItem"
+        ]
+        Resource = aws_dynamodb_table.file_copy_tracking.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "sns:Publish"
+        ]
+        Resource = aws_sns_topic.file_copy_failures.arn
+      }
+    ]
+  })
+}
+
+# DynamoDB table for file copy tracking
+resource "aws_dynamodb_table" "file_copy_tracking" {
+  name           = "FileCopyTracking"
+  billing_mode   = "PAY_PER_REQUEST"
+  hash_key       = "fileKey"
+  range_key      = "sourceBucket"
+
+  attribute {
+    name = "fileKey"
+    type = "S"
+  }
+
+  attribute {
+    name = "sourceBucket"
+    type = "S"
+  }
+
+  tags = {
+    Environment = "dev"
+    Terraform   = "true"
+  }
+}
+
+# Step Function definition
+resource "aws_sfn_state_machine" "file_copy_workflow" {
+  name     = "file-copy-workflow"
+  role_arn = aws_iam_role.step_functions_role.arn
+
+  definition = templatefile("${path.module}/step_function_definition.json", {
+    table_name = aws_dynamodb_table.file_copy_tracking.name
+    topic_arn  = aws_sns_topic.file_copy_failures.arn
+  })
+
+  tags = {
+    Environment = "dev"
+    Terraform   = "true"
+  }
+}
+
+# Outputs
+output "step_function_arn" {
+  description = "ARN of the Step Function"
+  value       = aws_sfn_state_machine.file_copy_workflow.arn
+}
+
+output "sns_topic_arn" {
+  description = "ARN of the SNS topic for file copy failures"
+  value       = aws_sns_topic.file_copy_failures.arn
+}
+
+output "dynamodb_table_name" {
+  description = "Name of the DynamoDB table for file copy tracking"
+  value       = aws_dynamodb_table.file_copy_tracking.name
 }

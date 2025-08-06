@@ -1,0 +1,21 @@
+{
+  "name": "lambda-replication-worker",
+  "version": "1.0.0",
+  "description": "Lambda function to handle S3 events and trigger Step Function for file distribution",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@aws-sdk/client-sfn": "^3.0.0",
+    "@aws-sdk/client-s3": "^3.0.0"
+  },
+  "keywords": [
+    "aws",
+    "lambda",
+    "s3",
+    "step-functions"
+  ],
+  "author": "",
+  "license": "ISC"
+}
