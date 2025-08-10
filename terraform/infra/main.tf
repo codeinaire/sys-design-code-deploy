@@ -1,4 +1,15 @@
 terraform {
+  backend "s3" {
+    bucket         = "iq1-code-deploy-terraform-state-bucket-c710fc0b"
+    key            = "infra/terraform.tfstate"
+    region         = "us-east-1"
+    use_lockfile   = true
+    force_path_style = true
+    endpoints = { s3 = "http://localhost:4566" }
+    encrypt        = true
+  }
+  required_version = "~> 1.0"
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -76,9 +87,6 @@ module "region_b_builds_bucket" {
   bucket = "region-b-builds"
 }
 
-
-
-
 module "dynamodb_tables" {
   source  = "terraform-aws-modules/dynamodb-table/aws"
   version = "5.0.0"
@@ -101,7 +109,7 @@ module "lambda_build_worker" {
   handler              = "index.handler"
   runtime              = "nodejs20.x"
   create_package       = false
-  local_existing_package = "../src/lambda_build_worker.zip"
+  local_existing_package = "${path.root}/../../src/lambda_build_worker.zip"
 
   attach_policy_json = true
   policy_json = jsonencode({
@@ -131,7 +139,7 @@ module "lambda_replication_worker" {
   handler              = "index.handler"
   runtime              = "nodejs20.x"
   create_package       = false
-  local_existing_package = "../src/lambda_replication_worker.zip"
+  local_existing_package = "${path.root}/../../src/lambda_replication_worker.zip"
 
   environment_variables = {
     STEP_FUNCTION_ARN = aws_sfn_state_machine.file_copy_workflow.arn
@@ -186,7 +194,7 @@ module "lambda_regional_sync" {
   handler              = "index.handler"
   runtime              = "nodejs20.x"
   create_package       = false
-  local_existing_package = "../src/lambda_regional_sync.zip"
+  local_existing_package = "${path.root}/../../src/lambda_regional_sync.zip"
 
   attach_policy_json = true
   policy_json = jsonencode({
@@ -244,7 +252,7 @@ module "lambda_step_function_invoker" {
   handler              = "index.handler"
   runtime              = "nodejs20.x"
   create_package       = false
-  local_existing_package = "../src/lambda_step_function_invoker.zip"
+  local_existing_package = "${path.root}/../../src/lambda_step_function_invoker.zip"
 
   environment_variables = {
     STEP_FUNCTION_ARN = aws_sfn_state_machine.file_copy_workflow.arn
@@ -268,18 +276,11 @@ module "lambda_step_function_invoker" {
 module "api_gateway" {
   source = "terraform-aws-modules/apigateway-v2/aws"
 
-  name          = "dev-http"
-  description   = "My awesome HTTP API Gateway"
+  name          = "code-deploy-api"
+  description   = "Code Deploy API Gateway"
   protocol_type = "HTTP"
 
-  cors_configuration = {
-    allow_headers = ["content-type", "x-amz-date", "authorization", "x-api-key", "x-amz-security-token", "x-amz-user-agent"]
-    allow_methods = ["*"]
-    allow_origins = ["*"]
-  }
-
-  # Custom domain
-  domain_name = "terraform-aws-modules.modules.tf"
+  create_domain_name = false
 
   # Access logs
   stage_access_log_settings = {
@@ -311,18 +312,7 @@ module "api_gateway" {
     })
   }
 
-  # Authorizer(s)
-  authorizers = {
-    "azure" = {
-      authorizer_type  = "JWT"
-      identity_sources = ["$request.header.Authorization"]
-      name             = "azure-auth"
-      jwt_configuration = {
-        audience         = ["d6a38afd-45d6-4874-d1aa-3c5c558aqcc2"]
-        issuer           = "https://sts.windows.net/aaee026e-8f37-410e-8869-72d9154873e4/"
-      }
-    }
-  }
+  # Authorizer(s) don't need for this local setup but in production it'd be important
 
   # Routes & Integration(s)
   routes = {
@@ -341,13 +331,6 @@ module "api_gateway" {
         integration_uri  = module.lambda_replication_worker.lambda_function_invoke_arn
         payload_format_version = "2.0"
         timeout_milliseconds   = 30000
-      }
-    }
-
-    "$default" = {
-      integration = {
-        integration_type = "AWS_PROXY"
-        integration_uri  = module.lambda_regional_sync.lambda_function_invoke_arn
       }
     }
   }
@@ -463,20 +446,4 @@ resource "aws_sfn_state_machine" "file_copy_workflow" {
     Environment = "dev"
     Terraform   = "true"
   }
-}
-
-# Outputs
-output "step_function_arn" {
-  description = "ARN of the Step Function"
-  value       = aws_sfn_state_machine.file_copy_workflow.arn
-}
-
-output "sns_topic_arn" {
-  description = "ARN of the SNS topic for file copy failures"
-  value       = aws_sns_topic.file_copy_failures.arn
-}
-
-output "dynamodb_table_name" {
-  description = "Name of the DynamoDB table for file copy tracking"
-  value       = aws_dynamodb_table.file_copy_tracking.name
 }

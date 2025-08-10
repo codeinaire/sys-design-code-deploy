@@ -2,6 +2,10 @@
 
 An implementation of a code deploy system based on the answer to AlgoExpert's system design questions.
 
+# To Get Started
+
+Run the `get_started.sh` script.
+
 ## Useful Info
 
 To use the aws cli tool [some configuration needs to be done](https://docs.localstack.cloud/aws/integrations/aws-native-tools/aws-cli/#localstack-aws-cli-awslocal) or the awslocalstack wrapper can be used. I prefer to use the regular aws cli as it's a straight forward configuration and using the wrappy requires downgrading to aws cli v1

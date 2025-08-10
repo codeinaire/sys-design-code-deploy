@@ -1,11 +1,16 @@
 # docker volume
 volume/*
 
-# terraform
-infra/.terraform/*
-infra/.terraform.lock.hcl
-infra/terraform.tfstate
-infra/terraform.tfstate.backup
+# terraform (do not commit local caches/state/secrets)
+**/.terraform/*
+**/*.tfstate
+**/*.tfstate.*
+**/terraform.tfstate
+**/terraform.tfstate.backup
+**/*.tfplan
+**/*.tfvars
+**/*.tfvars.json
+**/*.lock.hcl
 
 # lambda
 *.zip
