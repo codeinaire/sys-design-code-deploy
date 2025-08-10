@@ -143,57 +143,47 @@
         "successfulBuckets.$": "$.copyResults[?(@.success == true)].destinationBucket",
         "failedBuckets.$": "$.copyResults[?(@.success == false)].destinationBucket"
       },
-      "Next": "UpdateDynamoDBFinal"
+      "Next": "CheckIfAllSuccessful"
     },
-    "UpdateDynamoDBFinal": {
+
+    "CheckIfAllSuccessful": {
+      "Type": "Choice",
+      "Comment": "Determine if all copies were successful",
+      "Choices": [
+        {
+          "Variable": "$.failedCopies",
+          "NumericEquals": 0,
+          "Next": "UpdateDynamoDBFinalSuccess"
+        }
+      ],
+      "Default": "UpdateDynamoDBFinalFailure"
+    },
+
+    "UpdateDynamoDBFinalSuccess": {
       "Type": "Task",
       "Resource": "arn:aws:states:::dynamodb:updateItem",
-      "Comment": "Update DynamoDB with final workflow results",
+      "Comment": "Update DynamoDB with final workflow results (success)",
       "Parameters": {
         "TableName": "${table_name}",
         "Key": {
-          "fileKey": {
-            "S.$": "$.sourceKey"
-          },
-          "sourceBucket": {
-            "S.$": "$.sourceBucket"
-          }
+          "fileKey": { "S.$": "$.sourceKey" },
+          "sourceBucket": { "S.$": "$.sourceBucket" }
         },
         "UpdateExpression": "SET #status = :status, completedAt = :completedAt, totalBuckets = :totalBuckets, successfulCopies = :successfulCopies, failedCopies = :failedCopies, successfulBuckets = :successfulBuckets, failedBuckets = :failedBuckets, copyResults = :copyResults, executionId = :executionId",
-        "ExpressionAttributeNames": {
-          "#status": "status"
-        },
+        "ExpressionAttributeNames": { "#status": "status" },
         "ExpressionAttributeValues": {
-          ":status": {
-            "S.$": "States.If(States.MathEquals($.successfulCopies, $.totalBuckets), 'COMPLETED', 'FAILED')"
-          },
-          ":completedAt": {
-            "S.$": "$.completedAt"
-          },
-          ":totalBuckets": {
-            "N.$": "States.Format('{}', $.totalBuckets)"
-          },
-          ":successfulCopies": {
-            "N.$": "States.Format('{}', $.successfulCopies)"
-          },
-          ":failedCopies": {
-            "N.$": "States.Format('{}', $.failedCopies)"
-          },
-          ":successfulBuckets": {
-            "S.$": "States.JsonToString($.successfulBuckets)"
-          },
-          ":failedBuckets": {
-            "S.$": "States.JsonToString($.failedBuckets)"
-          },
-          ":copyResults": {
-            "S.$": "States.JsonToString($.copyResults)"
-          },
-          ":executionId": {
-            "S.$": "$.executionId"
-          }
+          ":status": { "S": "COMPLETED" },
+          ":completedAt": { "S.$": "$.completedAt" },
+          ":totalBuckets": { "N.$": "States.Format('{}', $.totalBuckets)" },
+          ":successfulCopies": { "N.$": "States.Format('{}', $.successfulCopies)" },
+          ":failedCopies": { "N.$": "States.Format('{}', $.failedCopies)" },
+          ":successfulBuckets": { "S.$": "States.JsonToString($.successfulBuckets)" },
+          ":failedBuckets": { "S.$": "States.JsonToString($.failedBuckets)" },
+          ":copyResults": { "S.$": "States.JsonToString($.copyResults)" },
+          ":executionId": { "S.$": "$.executionId" }
         }
       },
-      "Next": "CheckIfAllSuccessful",
+      "Next": "AllCopiesSuccessful",
       "Retry": [
         {
           "ErrorEquals": ["States.ALL"],
@@ -203,17 +193,40 @@
         }
       ]
     },
-    "CheckIfAllSuccessful": {
-      "Type": "Choice",
-      "Comment": "Determine if all copies were successful",
-      "Choices": [
-        {
-          "Variable": "$.failedCopies",
-          "NumericEquals": 0,
-          "Next": "AllCopiesSuccessful"
+
+    "UpdateDynamoDBFinalFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Comment": "Update DynamoDB with final workflow results (failure)",
+      "Parameters": {
+        "TableName": "${table_name}",
+        "Key": {
+          "fileKey": { "S.$": "$.sourceKey" },
+          "sourceBucket": { "S.$": "$.sourceBucket" }
+        },
+        "UpdateExpression": "SET #status = :status, completedAt = :completedAt, totalBuckets = :totalBuckets, successfulCopies = :successfulCopies, failedCopies = :failedCopies, successfulBuckets = :successfulBuckets, failedBuckets = :failedBuckets, copyResults = :copyResults, executionId = :executionId",
+        "ExpressionAttributeNames": { "#status": "status" },
+        "ExpressionAttributeValues": {
+          ":status": { "S": "FAILED" },
+          ":completedAt": { "S.$": "$.completedAt" },
+          ":totalBuckets": { "N.$": "States.Format('{}', $.totalBuckets)" },
+          ":successfulCopies": { "N.$": "States.Format('{}', $.successfulCopies)" },
+          ":failedCopies": { "N.$": "States.Format('{}', $.failedCopies)" },
+          ":successfulBuckets": { "S.$": "States.JsonToString($.successfulBuckets)" },
+          ":failedBuckets": { "S.$": "States.JsonToString($.failedBuckets)" },
+          ":copyResults": { "S.$": "States.JsonToString($.copyResults)" },
+          ":executionId": { "S.$": "$.executionId" }
         }
-      ],
-      "Default": "SomeCopiesFailed"
+      },
+      "Next": "SomeCopiesFailed",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ]
     },
     "AllCopiesSuccessful": {
       "Type": "Pass",
@@ -247,8 +260,8 @@
       "Resource": "arn:aws:states:::sns:publish",
       "Parameters": {
         "TopicArn": "${topic_arn}",
-        "Subject.$": "States.Format('🚨 File Copy Failures: {}', $.sourceKey)",
-        "Message.$": "States.Format('File Distribution Workflow Failed\\n\\n📁 File: \"{}\"\\n🪣 Source Bucket: \"{}\"\\n🎯 Total Destination Buckets: {}\\n✅ Successful Copies: {}\\n❌ Failed Copies: {}\\n\\n🚫 Failed Buckets:\\n{}\\n\\n📊 Execution ID: {}\\n\\n💾 Full details available in DynamoDB table \"FileCopyTracking\"', $.sourceKey, $.sourceBucket, $.totalBuckets, $.successfulCopies, $.failedCopies, States.ArrayJoin($.failedBuckets, '\\n- '), $.executionId)"
+        "Subject.$": "States.Format('File Copy Failures: {}', $.sourceKey)",
+        "Message.$": "States.Format('File Distribution Workflow Failed\\n\\n File: \"{}\"\\n Source Bucket: \"{}\"\\n Total Destination Buckets: {}\\n Successful Copies: {}\\n Failed Copies: {}\\n\\n Failed Buckets: {}\\n\\n Execution ID: {}\\n\\n Full details available in DynamoDB table \"FileCopyTracking\"', $.sourceKey, $.sourceBucket, $.totalBuckets, $.successfulCopies, $.failedCopies, States.JsonToString($.failedBuckets), $.executionId)"
       },
       "End": true,
       "Retry": [

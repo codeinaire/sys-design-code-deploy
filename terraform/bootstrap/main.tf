@@ -1,6 +1,6 @@
 terraform {
   backend "s3" {
-    bucket         = "iq1-code-deploy-terraform-state-bucket-c710fc0b"
+    bucket         = "iq1-code-deploy-terraform-state-bucket-6ab8c37e"
     key            = "bootstrap/terraform.tfstate"
     region         = "us-east-1"
     use_lockfile   = true
