@@ -19,10 +19,67 @@ docker_compose_down() {
   fi
 }
 
+# Remove backend S3 objects (Terraform state files) if present
+delete_backend_s3_objects() {
+  # Try to determine bucket name if not already known
+  if [ -z "${S3_BUCKET_NAME:-}" ]; then
+    if command -v terraform >/dev/null 2>&1; then
+      local bucket_output
+      if bucket_output=$(terraform -chdir="$BOOTSTRAP_DIR" output -raw s3_bucket_name 2>/dev/null); then
+        S3_BUCKET_NAME="$bucket_output"
+      fi
+    fi
+  fi
+
+  if [ -z "${S3_BUCKET_NAME:-}" ]; then
+    log "S3 bucket name unknown; skipping backend object cleanup."
+    return
+  fi
+
+  # Ensure AWS env for LocalStack in case main() failed before exporting
+  export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-test}"
+  export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-test}"
+  export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+  export AWS_ENDPOINT_URL="${AWS_ENDPOINT_URL:-http://localhost:4566}"
+
+  if ! command -v aws >/dev/null 2>&1; then
+    log "aws CLI not found; cannot clean up backend S3 objects."
+    return
+  fi
+
+  log "Deleting backend state objects from s3://$S3_BUCKET_NAME ..."
+  for key in "bootstrap/terraform.tfstate" "infra/terraform.tfstate"; do
+    aws --endpoint-url "$AWS_ENDPOINT_URL" s3api delete-object \
+      --bucket "$S3_BUCKET_NAME" --key "$key" >/dev/null 2>&1 || true
+    # Attempt to delete potential lock files as well
+    aws --endpoint-url "$AWS_ENDPOINT_URL" s3api delete-object \
+      --bucket "$S3_BUCKET_NAME" --key "$key.tflock" >/dev/null 2>&1 || true
+    aws --endpoint-url "$AWS_ENDPOINT_URL" s3api delete-object \
+      --bucket "$S3_BUCKET_NAME" --key "$key.tflock.id" >/dev/null 2>&1 || true
+  done
+}
+
+# Remove local Terraform artifacts for a given directory
+delete_local_terraform_artifacts() {
+  local dir_path="$1"
+  log "Deleting local Terraform artifacts in $dir_path ..."
+
+  # Remove hidden .terraform directory
+  rm -rf "$dir_path/.terraform" || true
+
+  # Remove lockfile and local states
+  rm -f  "$dir_path/.terraform.lock.hcl" || true
+  rm -f  "$dir_path/terraform.tfstate" || true
+  rm -f  "$dir_path/terraform.tfstate.backup" || true
+}
+
 on_exit() {
   ec=$?
-  if [ "$ec" -eq 1 ]; then
-    log "Exit code 1 detected. Running docker compose down."
+  if [ "$ec" -ne 0 ]; then
+    log "Non-zero exit ($ec) detected. Cleaning up backend S3 objects, local Terraform artifacts, and docker compose."
+    delete_backend_s3_objects
+    delete_local_terraform_artifacts "$BOOTSTRAP_DIR"
+    delete_local_terraform_artifacts "$INFRA_DIR"
     docker_compose_down
   fi
 }

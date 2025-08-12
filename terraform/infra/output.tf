@@ -13,12 +13,7 @@ output "dynamodb_table_name" {
   value       = aws_dynamodb_table.file_copy_tracking.name
 }
 
-output "api_gateway_url" {
-  description = "URL of the API Gateway"
-  value       = module.api_gateway.api_endpoint
-}
-
-output "api_gateway_integrations" {
-  description = "Integrations of the API Gateway"
-  value       = module.api_gateway.integrations
+output "api_gateway_execution_arn" {
+  description = "Execution ARN of the API Gateway"
+  value       = module.api_gateway.execution_arn
 }

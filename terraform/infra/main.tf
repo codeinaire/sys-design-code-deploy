@@ -1,6 +1,6 @@
 terraform {
   backend "s3" {
-    bucket         = "iq1-code-deploy-terraform-state-bucket-6ab8c37e"
+    bucket         = "iq1-code-deploy-terraform-state-bucket-03bfc72f"
     key            = "infra/terraform.tfstate"
     region         = "us-east-1"
     use_lockfile   = true
@@ -8,6 +8,7 @@ terraform {
     endpoints = { s3 = "http://localhost:4566" }
     encrypt        = true
   }
+
   required_version = "~> 1.0"
 
   required_providers {
@@ -29,8 +30,6 @@ provider "aws" {
 
   endpoints {
     apigateway     = "http://localhost:4566"
-    apigatewayv2   = "http://localhost:4566"
-    cloudformation = "http://localhost:4566"
     cloudwatch     = "http://localhost:4566"
     logs           = "http://localhost:4566"
     dynamodb       = "http://localhost:4566"
@@ -54,6 +53,9 @@ provider "aws" {
     sts            = "http://localhost:4566"
   }
 }
+
+# Current region data (used for API Gateway Lambda integration URIs)
+data "aws_region" "current" {}
 
 module "sqs_deployment_jobs_queue" {
   source  = "terraform-aws-modules/sqs/aws"
@@ -274,71 +276,66 @@ module "lambda_step_function_invoker" {
 }
 
 module "api_gateway" {
-  source = "terraform-aws-modules/apigateway-v2/aws"
+  source = "cloudposse/api-gateway/aws"
+  version = "0.9.0"
 
-  name          = "code-deploy-api"
-  description   = "Code Deploy API Gateway"
-  protocol_type = "HTTP"
+  name    = "code-deploy-api"
+  stage   = "dev"
 
-  create_domain_name = false
-
-  # Access logs
-  stage_access_log_settings = {
-    create_log_group            = true
-    log_group_retention_in_days = 7
-    format = jsonencode({
-      context = {
-        domainName              = "$context.domainName"
-        integrationErrorMessage = "$context.integrationErrorMessage"
-        protocol                = "$context.protocol"
-        requestId               = "$context.requestId"
-        requestTime             = "$context.requestTime"
-        responseLength          = "$context.responseLength"
-        routeKey                = "$context.routeKey"
-        stage                   = "$context.stage"
-        status                  = "$context.status"
-        error = {
-          message      = "$context.error.message"
-          responseType = "$context.error.responseType"
-        }
-        identity = {
-          sourceIP = "$context.identity.sourceIp"
-        }
-        integration = {
-          error             = "$context.integration.error"
-          integrationStatus = "$context.integration.integrationStatus"
-        }
-      }
-    })
-  }
-
-  # Authorizer(s) don't need for this local setup but in production it'd be important
-
-  # Routes & Integration(s)
-  routes = {
-    "POST /build" = {
-      integration = {
-        integration_type = "AWS_PROXY"
-        integration_uri  = module.lambda_build_worker.lambda_function_invoke_arn
-        payload_format_version = "2.0"
-        timeout_milliseconds   = 30000
-      }
+  # Define REST API via OpenAPI with Lambda proxy integrations
+  openapi_config = {
+    openapi = "3.0.1"
+    info = {
+      title   = "code-deploy-api"
+      version = "1.0"
     }
-
-    "POST /deploy" = {
-      integration = {
-        integration_type = "AWS_PROXY"
-        integration_uri  = module.lambda_replication_worker.lambda_function_invoke_arn
-        payload_format_version = "2.0"
-        timeout_milliseconds   = 30000
+    paths = {
+      "/build" = {
+        post = {
+          x-amazon-apigateway-integration = {
+            httpMethod = "POST"
+            type       = "aws_proxy"
+            uri        = "arn:aws:apigateway:${data.aws_region.current.id}:lambda:path/2015-03-31/functions/${module.lambda_build_worker.lambda_function_arn}/invocations"
+          }
+        }
+      }
+      "/deploy" = {
+        post = {
+          x-amazon-apigateway-integration = {
+            httpMethod = "POST"
+            type       = "aws_proxy"
+            uri        = "arn:aws:apigateway:${data.aws_region.current.id}:lambda:path/2015-03-31/functions/${module.lambda_replication_worker.lambda_function_arn}/invocations"
+          }
+        }
       }
     }
   }
+
+  logging_level      = "INFO"
+  metrics_enabled    = false
+  data_trace_enabled = false
 
   tags = {
     Environment = "dev"
     Terraform   = "true"
   }
+}
+
+# Allow API Gateway to invoke Lambdas
+resource "aws_lambda_permission" "allow_apigw_invoke_build" {
+  statement_id  = "AllowAPIGatewayInvokeBuild"
+  action        = "lambda:InvokeFunction"
+  function_name = module.lambda_build_worker.lambda_function_arn
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${module.api_gateway.execution_arn}/*/POST/build"
+}
+
+resource "aws_lambda_permission" "allow_apigw_invoke_replication" {
+  statement_id  = "AllowAPIGatewayInvokeReplication"
+  action        = "lambda:InvokeFunction"
+  function_name = module.lambda_replication_worker.lambda_function_arn
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${module.api_gateway.execution_arn}/*/POST/deploy"
 }
 
 # SNS Topic for file copy failure notifications
