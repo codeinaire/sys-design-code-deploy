@@ -15,3 +15,5 @@ volume/*
 
 # lambda
 *.zip
+
+**/node_modules

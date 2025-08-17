@@ -1,0 +1,21 @@
+{
+  "name": "lambda_build_worker",
+  "version": "1.0.0",
+  "description": "Lambda function to handle build requests and upload files to S3",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "aws-sdk": "^2.1574.0",
+    "axios": "^1.6.0"
+  },
+  "keywords": [
+    "lambda",
+    "aws",
+    "build",
+    "s3"
+  ],
+  "author": "",
+  "license": "ISC"
+}

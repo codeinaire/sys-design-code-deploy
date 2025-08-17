@@ -120,7 +120,7 @@ This phase is now fully defined by the infrastructure created by Terraform and t
       terraform output -raw step_function_arn
       ```
 4.  **Step 4: Trigger the pipeline.**
-    - **Action:** `curl -X POST $(terraform output -raw api_gateway_url)/builds -d '{"app": "my-awesome-app"}'`.
+    - **Action:** `curl -X POST $(terraform output -raw api_gateway_url)/builds -d '{"commit": "abc123"}'`.
 5.  **Step 5: Test S3-triggered workflow.**
     - **Action:** Upload a file to the global-builds bucket to trigger the workflow:
       ```bash

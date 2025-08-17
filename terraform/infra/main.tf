@@ -1,6 +1,6 @@
 terraform {
   backend "s3" {
-    bucket         = "iq1-code-deploy-terraform-state-bucket-03bfc72f"
+    bucket         = "iq1-code-deploy-terraform-state-bucket-6374e550"
     key            = "infra/terraform.tfstate"
     region         = "us-east-1"
     use_lockfile   = true
@@ -289,14 +289,41 @@ module "api_gateway" {
       title   = "code-deploy-api"
       version = "1.0"
     }
+    components = {
+      schemas = {
+        BuildRequest = {
+          type = "object"
+          required = ["commit"]
+          properties = {
+            commit = {
+              type = "string"
+              description = "The commit hash or identifier for the build"
+              example = "abc123"
+            }
+          }
+        }
+      }
+    }
     paths = {
-      "/build" = {
+      "/builds" = {
         post = {
           x-amazon-apigateway-integration = {
             httpMethod = "POST"
             type       = "aws_proxy"
             uri        = "arn:aws:apigateway:${data.aws_region.current.id}:lambda:path/2015-03-31/functions/${module.lambda_build_worker.lambda_function_arn}/invocations"
           }
+          x-amazon-apigateway-request-validators = {
+            "validate-body" = {
+              validateRequestBody = true
+              validateRequestParameters = false
+            }
+          }
+          x-amazon-apigateway-request-validator = "validate-body"
+          x-amazon-apigateway-request-models = {
+            "application/json" = "BuildRequest"
+          }
+          consumes = ["application/json"]
+          produces = ["application/json"]
         }
       }
       "/deploy" = {
@@ -327,7 +354,7 @@ resource "aws_lambda_permission" "allow_apigw_invoke_build" {
   action        = "lambda:InvokeFunction"
   function_name = module.lambda_build_worker.lambda_function_arn
   principal     = "apigateway.amazonaws.com"
-  source_arn    = "${module.api_gateway.execution_arn}/*/POST/build"
+  source_arn    = "${module.api_gateway.execution_arn}/*/POST/builds"
 }
 
 resource "aws_lambda_permission" "allow_apigw_invoke_replication" {
