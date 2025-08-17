@@ -11,6 +11,7 @@ volume/*
 **/*.tfvars
 **/*.tfvars.json
 **/*.lock.hcl
+**/*.bak
 
 # lambda
 *.zip
